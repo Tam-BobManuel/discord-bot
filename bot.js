@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits,ChannelType } from 'discord.js';
+
 
 // Load environment variables from .env file
 dotenv.config();
@@ -14,45 +15,191 @@ const client = new Client({
         GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildModeration,
         GatewayIntentBits.MessageContent, // Required to read message content
-    ],
+    ], 
 });
+
+
 
 // Create a cache to store messages
 const messageCache = new Map();
 
+// VARIABLES
+const welcomeChannelId = process.env.WELCOME_CHANNEL_ID;
+const watcherRoleId = process.env.WATCHER_ROLE_ID;
+const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
+const WATCHER_ROLE_ID = watcherRoleId;
+const agreedToRule = process.env.AGREED_ROLE_NAME; 
+const rulesChannelId = process.env.RULES_CHANNEL_ID;
+const rulesMessageId = process.env.RULES_MESSAGE_ID;
+const generalChannelId = process.env.GENERAL_CHANNEL_ID;
+const ROLES = {
+    ASIAN: process.env.ROLE_ASIAN,
+    EUROPE: process.env.ROLE_EUROPE,
+    NORTH_AMERICA: process.env.ROLE_NORTH_AMERICA,
+    SOUTH_AMERICA: process.env.ROLE_SOUTH_AMERICA,
+    AFRICA: process.env.ROLE_AFRICA,
+    OCEANIA: process.env.ROLE_OCEANIA,
+    CARIBBEAN: process.env.ROLE_CARIBBEAN,
+    WHITE: process.env.ROLE_WHITE,
+    BLACK: process.env.ROLE_BLACK,
+    MIXED: process.env.ROLE_MIXED,
+    EAST_ASIAN: process.env.ROLE_EAST_ASIAN,
+    VERIFIED_BLACK: '',
+    VERIFIED: '',
+    LURKER: process.env.ROLE_LURKER
+};
+const MESSAGES = {
+    CONTINENTAL: process.env.MESSAGE_CONTINENTAL,
+    SKIN_COLOR: process.env.MESSAGE_SKIN_COLOR,
+    VERIFIED: process.env.MESSAGE_VERIFIED,
+    BASE: process.env.MESSAGE_BASE
+};
+const ROLES_CHANNEL_ID = process.env.ROLES_CHANNEL_ID;
+
+
 // Event listener for when the bot is ready
-client.on('ready', () => {
+client.on('ready', async () => {
     console.log(`Our bot is ready to go!!!`);
 
-    // Schedule the message-clearing task every 30 minutes
-    setInterval(clearGeneralChannel, 30 * 60 * 1000); // 30 minutes in milliseconds
+    // Find the rules channel
+    const rulesChannel = client.channels.cache.get(rulesChannelId);
+    if (!rulesChannel) {
+        console.error(`Could not find the rules channel with ID "${rulesChannelId}".`);
+        return;
+    }
+
+    try {
+        const rulesMessage = await rulesChannel.messages.fetch(rulesMessageId);
+        console.log(`Found existing rules message with ID "${rulesMessageId}".`);
+
+        // Fetch reactions for users who reacted while the bot was offline
+        const reactions = rulesMessage.reactions.cache.get('✅');
+
+        if (reactions) {
+            const users = await reactions.users.fetch();
+            for (const user of users.values()) {
+                if (user.bot) continue; // Skip bots
+
+                // Find the guild member who reacted
+                const guild = rulesMessage.guild;
+                const member = await guild.members.fetch(user.id).catch(() => null);
+
+                if (!member) {
+                    console.error(`Member not found for user ${user.tag}.`);
+                    continue;
+                }
+
+                // Find the role to assign
+                const role = guild.roles.cache.find((r) => r.name === agreedToRule);
+
+                if (!role) {
+                    console.error(`Role "${agreedToRule}" not found.`);
+                    continue;
+                }
+
+                // Check if the member already has the role
+                if (!member.roles.cache.has(role.id)) {
+                    try {
+                        // Send a message tagging the user
+                        await rulesChannel.send(`Welcome ${member}! The role "${agreedToRule}" has been added to you. Enjoy your stay!`);
+                        
+                        // Assign the role to the member
+                        await member.roles.add(role);
+                        console.log(`Assigned the "${agreedToRule}" role to ${member.user.tag}.`);
+                    } catch (error) {
+                        console.error(`Failed to assign the "${agreedToRule}" role to ${member.user.tag}:`, error);
+                    }
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error fetching rules message or reactions:', error);
+    }
+
+    // Schedule the message-clearing task every 1 minute
+    setInterval(clearGeneralChannel, 1 * 60 * 1000); // 1 minute in milliseconds
 });
 
-// Function to clear messages in the "general" channel
-async function clearGeneralChannel() {
+client.on('guildMemberAdd', async (member) => {
     try {
-        // Replace 'general' with the exact name of your channel
-        const channelName = 'general';
-
-        // Find the "general" channel by name
-        const channel = client.channels.cache.find(
-            (ch) => ch.name === channelName && ch.isTextBased()
-        );
-
-        if (!channel) {
-            console.error(`Could not find the "${channelName}" channel.`);
+        const welcomeChannel = member.guild.channels.cache.get(welcomeChannelId);
+        const rulesChannel = member.guild.channels.cache.get(rulesChannelId);
+        
+        if (welcomeChannel && rulesChannel) {
+            await welcomeChannel.send(
+                `Welcome ${member}! Please head over to ${rulesChannel} and react with ✅ to gain access to the rest of the server!`
+            );
+        }
+    } catch (error) {
+        console.error('Error sending welcome message:', error);
+    }
+});
+client.on('guildMemberRemove', async (member) => {
+    try {
+        // Get the rules channel
+        const rulesChannel = member.guild.channels.cache.get(rulesChannelId);
+        if (!rulesChannel) {
+            console.error(`Could not find the rules channel with ID "${rulesChannelId}".`);
             return;
         }
 
-        // Fetch the last 100 messages in the channel
-        const messages = await channel.messages.fetch({ limit: 10 });
+        // Fetch the rules message
+        const rulesMessage = await rulesChannel.messages.fetch(rulesMessageId);
+        if (!rulesMessage) {
+            console.error('Could not find the rules message.');
+            return;
+        }
+
+        // Get the checkmark reaction
+        const reaction = rulesMessage.reactions.cache.get('✅');
+        if (reaction) {
+            // Remove the user's reaction
+            await reaction.users.remove(member.id);
+            console.log(`Removed reaction from ${member.user.tag} as they left the server.`);
+        }
+    } catch (error) {
+        console.error('Error removing reaction from leaving member:', error);
+    }
+});
+
+// Function to clear messages in the specified channel
+async function clearGeneralChannel() {
+    try {
+        // Find the channel by ID
+        const channel = client.channels.cache.get(generalChannelId);
+
+        if (!channel) {
+            console.error(`Could not find the channel with ID "${generalChannelId}".`);
+            return;
+        }
+
+        // Fetch messages in the channel (no limit)
+        const messages = await channel.messages.fetch({ limit: 100 }); // Adjust limit if needed
+
+        // Fetch pinned messages
+        const pinnedMessages = await channel.messages.fetchPinned();
+
+        // Filter messages to delete
+        const messagesToDelete = messages.filter((msg) => {
+            // Skip pinned messages
+            if (pinnedMessages.has(msg.id)) return false;
+
+            // Skip messages from users with the watcher role ID
+            const member = msg.guild?.members.cache.get(msg.author.id);
+            if (member && member.roles.cache.has(watcherRoleId)) {
+                return false;
+            }
+
+            // Delete all other messages
+            return true;
+        });
 
         // Bulk delete the messages
-        if (messages.size > 0) {
-            await channel.bulkDelete(messages);
-            console.log(`Cleared ${messages.size} messages in the "${channelName}" channel.`);
+        if (messagesToDelete.size > 0) {
+            await channel.bulkDelete(messagesToDelete);
+            console.log(`Cleared ${messagesToDelete.size} messages in the channel with ID "${generalChannelId}".`);
         } else {
-            console.log(`No messages to clear in the "${channelName}" channel.`);
+            console.log(`No messages to clear in the channel with ID "${generalChannelId}".`);
         }
     } catch (error) {
         console.error('Error clearing messages:', error);
@@ -60,7 +207,7 @@ async function clearGeneralChannel() {
 }
 
 // Event listener for incoming messages
-client.on('messageCreate', (message) => {
+client.on('messageCreate', async (message) => {
     // Ignore messages from bots
     if (message.author.bot) return;
 
@@ -75,16 +222,77 @@ client.on('messageCreate', (message) => {
     } else if (message.content === 'I love black people') {
         message.react('💖');
     }
+
+    // Handle prune command
+    if (message.content.startsWith('prune.')) {
+        // Check if the user has permission to manage messages
+        if (!message.member?.permissions.has('MANAGE_MESSAGES')) {
+            await message.reply('You do not have permission to use this command.');
+            return;
+        }
+    
+        // Extract the number of messages to delete
+        const numberToDelete = parseInt(message.content.split('.')[1], 10);
+    
+        // Validate the number
+        if (isNaN(numberToDelete)) {
+            await message.reply('Please provide a valid number of messages to delete.');
+            return;
+        }
+    
+        // Ensure the number is within Discord's limit (1-100)
+        if (numberToDelete < 1 || numberToDelete > 100) {
+            await message.reply('You can only delete between 1 and 100 messages at a time.');
+            return;
+        }
+    
+        try {
+            // Fetch messages
+            const fetchedMessages = await message.channel.messages.fetch({ limit: numberToDelete });
+    
+            // Filter out pinned messages from users with the "watchers" role
+            const messagesToDelete = fetchedMessages.filter(msg => {
+                const member = msg.guild.members.cache.get(msg.author.id);
+                const hasWatcherRole = member?.roles.cache.some(role => role.name.toLowerCase() === 'watchers');
+                return !msg.pinned || !hasWatcherRole; // Delete only if not pinned or not from "watchers"
+            });
+    
+            // Check if there are messages to delete
+            if (messagesToDelete.size === 0) {
+                await message.reply('No messages were deleted because they were either pinned by watchers or no valid messages were found.');
+                return;
+            }
+    
+            // Send a confirmation message before deleting
+            // await message.reply(`Deleting ${messagesToDelete.size} messages...`);
+    
+            // Bulk delete messages
+            await message.channel.bulkDelete(messagesToDelete);
+        } catch (error) {
+            console.error('Error deleting messages:', error);
+            await message.reply('Failed to delete messages. Please try again.');
+        }
+    }
+    
 });
 
 // Event listener for deleted messages
-client.on('messageDelete', (deletedMessage) => {
+client.on('messageDelete', async (deletedMessage) => {
     // Retrieve the cached message
     const cachedMessage = messageCache.get(deletedMessage.id);
 
     if (cachedMessage) {
-        // Tag the user who deleted the message
-        deletedMessage.channel.send(`${cachedMessage.author}, Stop deleting messages, you coward!`);
+        // Fetch the member who deleted the message
+        const member = deletedMessage.guild?.members.cache.get(cachedMessage.author.id);
+
+        // Check if the member has the watcher role ID
+        if (member && member.roles.cache.has(watcherRoleId)) {
+            // Skip notifying if the user has the watcher role
+            console.log(`Message deleted by ${cachedMessage.author.tag}, but they have the watcher role. No notification sent.`);
+        } else {
+            // Tag the user who deleted the message
+            deletedMessage.channel.send(`${cachedMessage.author}, Stop deleting messages, you coward!`);
+        }
     } else {
         // If the message is not in the cache, send a generic response
         deletedMessage.channel.send('Someone deleted a message, but I don\'t know who!');
@@ -93,6 +301,275 @@ client.on('messageDelete', (deletedMessage) => {
     // Remove the message from the cache
     messageCache.delete(deletedMessage.id);
 });
+
+// Event listener for message reactions
+client.on('messageReactionAdd', async (reaction, user) => {
+    try {
+        // Fetch the partial reaction if necessary
+        if (reaction.partial) await reaction.fetch();
+        if (reaction.message.partial) await reaction.message.fetch();
+
+        // Check if the reaction is on the rules message and is ✅
+        if (reaction.message.id === rulesMessageId && reaction.emoji.name === '✅') {
+            // Log the reaction event
+            console.log(`${user.tag} reacted to the rules message with ✅.`);
+
+            // Find the guild member who reacted
+            const guild = reaction.message.guild;
+            const member = await guild.members.fetch(user.id).catch(() => null);
+
+            if (!member) {
+                console.error(`Member not found for user ${user.tag}.`);
+                return;
+            }
+
+            // Find the role to assign
+            const role = guild.roles.cache.find((r) => r.name === agreedToRule);
+
+            if (!role) {
+                console.error(`Role "${agreedToRule}" not found.`);
+                return;
+            }
+
+            // Check if the member already has the role
+            if (!member.roles.cache.has(role.id)) {
+                try {
+                    // Send a message tagging the user
+                    await reaction.message.channel.send(`Welcome ${member}! The role "${agreedToRule}" has been added to you. Enjoy your stay!`);
+                    
+                    // Assign the role to the member
+                    await member.roles.add(role);
+                    console.log(`Assigned the "${agreedToRule}" role to ${member.user.tag}.`);
+                } catch (error) {
+                    console.error(`Failed to assign the "${agreedToRule}" role to ${member.user.tag}:`, error);
+                }
+            }
+        }
+        
+    } catch (error) {
+        console.error('Error handling reaction:', error);
+    }
+});
+
+
+
+
+// Emoji to role mappings
+const EMOJI_ROLES = {
+    '🌏': ROLES.ASIAN,
+    '💶': ROLES.EUROPE,
+    '🍁': ROLES.NORTH_AMERICA,
+    '🌎': ROLES.SOUTH_AMERICA,
+    '🌍': ROLES.AFRICA,
+    '🦘': ROLES.OCEANIA,
+    '🔥': ROLES.CARIBBEAN,
+    '🤍': ROLES.WHITE,
+    '🖤': ROLES.BLACK,
+    '🍥': ROLES.MIXED,
+    '🍜': ROLES.EAST_ASIAN,
+    '🎫': ROLES.VERIFIED_BLACK,
+    '✅': ROLES.VERIFIED,
+    '🆕': ROLES.LURKER
+};
+
+const CONTINENTAL_ROLES = new Set([
+    ROLES.ASIAN, ROLES.EUROPE, ROLES.NORTH_AMERICA,
+    ROLES.SOUTH_AMERICA, ROLES.AFRICA, ROLES.OCEANIA, ROLES.CARIBBEAN
+]);
+
+const SKIN_COLOR_ROLES = new Set([
+    ROLES.WHITE, ROLES.BLACK, ROLES.MIXED, ROLES.EAST_ASIAN
+]);
+
+// Function to handle role assignment
+
+
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+    if (message.content.toLowerCase() !== '!close') return;
+
+    const channel = message.channel;
+    if (channel.parentId !== TICKET_CATEGORY_ID) return;
+
+    try {
+        const member = await message.guild.members.fetch(message.author.id);
+        const isWatcher = member.roles.cache.has(WATCHER_ROLE_ID);
+        const isOwner = channel.topic === message.author.id;
+
+        if (isWatcher || isOwner) {
+            await channel.delete();
+            console.log(`Ticket ${channel.name} closed by ${message.author.tag}`);
+        } else {
+            await message.reply('You do not have permission to close this ticket.');
+        }
+    } catch (error) {
+        console.error('Error handling !close command:', error);
+    }
+});
+
+async function createVerificationTicket(user, guild) {
+    const category = guild.channels.cache.get(TICKET_CATEGORY_ID);
+    if (!category) {
+        console.error('Ticket category not found');
+        return;
+    }
+
+    // Check for existing tickets using cache
+    const existingTicket = category.children.cache.find(ch => ch.topic === user.id);
+    if (existingTicket) {
+        try {
+            await user.send(`You already have an open ticket: ${existingTicket}`);
+        } catch (error) {
+            console.error('Failed to send DM:', error);
+        }
+        return;
+    }
+
+    try {
+        const newChannel = await guild.channels.create({
+            name: `ticket-${user.username.toLowerCase().replace(/[^a-z0-9_]/g, '-').slice(0, 20)}`,
+            type: ChannelType.GuildText, // Updated channel type
+            parent: TICKET_CATEGORY_ID,
+            topic: user.id,
+            permissionOverwrites: [
+                {
+                    id: guild.id,
+                    deny: ['ViewChannel'],
+                },
+                {
+                    id: user.id,
+                    allow: ['ViewChannel', 'SendMessages'],
+                },
+                {
+                    id: WATCHER_ROLE_ID,
+                    allow: ['ViewChannel', 'SendMessages'],
+                },
+            ],
+        });
+
+        await newChannel.send({
+            content: `${user}, welcome to your ticket!\n` +
+                `Support team will be with you shortly.\n` +
+                `Type \`!close\` to close this ticket at any time.`
+        });
+
+        console.log(`Created ticket channel ${newChannel.name} for ${user.tag}`);
+    } catch (error) {
+        console.error('Error creating ticket channel:', error);
+        try {
+            await user.send('Failed to create ticket. Please try again later.');
+        } catch (dmError) {
+            console.error('Failed to send error DM:', dmError);
+        }
+    }
+}
+
+async function handleRoleChange(reaction, user, addRole) {
+    if (user.bot) return;
+    
+    try {
+        if (reaction.partial) await reaction.fetch();
+        if (reaction.message.partial) await reaction.message.fetch();
+    } catch (error) {
+        console.error('Error fetching reaction or message:', error);
+        return;
+    }
+    
+    if (reaction.message.channel.id !== ROLES_CHANNEL_ID) return;
+    
+    const emoji = reaction.emoji.name;
+    const roleId = EMOJI_ROLES[emoji];
+    if (!roleId) return;
+    
+    const guild = reaction.message.guild;
+    const member = await guild.members.fetch(user.id);
+    
+    // Handle verification roles separately
+    if (emoji === '🎫' || emoji === '✅') {
+        await createVerificationTicket(user, guild);
+        return;
+    }
+
+    if (addRole) {
+        const userContinentRoles = member.roles.cache.filter(role => CONTINENTAL_ROLES.has(role.id));
+        if (CONTINENTAL_ROLES.has(roleId) && userContinentRoles.size >= 2) {
+            try {
+                await reaction.users.remove(user.id);
+            } catch (error) {
+                console.error('Error removing reaction:', error);
+            }
+            
+            await reaction.message.channel.send(`${user}, you can only select up to 2 continental roles. Your selection has been reset.`);
+            await member.roles.remove(userContinentRoles);
+            return;
+        }
+
+        const userSkinRoles = member.roles.cache.filter(role => SKIN_COLOR_ROLES.has(role.id));
+        if (SKIN_COLOR_ROLES.has(roleId) && userSkinRoles.size >= 1) {
+            try {
+                await reaction.users.remove(user.id);
+            } catch (error) {
+                console.error('Error removing reaction:', error);
+            }
+            
+            await reaction.message.channel.send(`${user}, you can only select one skin color role. Your selection has been reset.`);
+            await member.roles.remove(userSkinRoles);
+            return;
+        }
+
+        try {
+            if (!member.roles.cache.has(roleId)) {
+                await member.roles.add(roleId);
+                console.log(`Added role ${roleId} to ${user.tag}`);
+            }
+        } catch (error) {
+            console.error(`Error adding role: ${error}`);
+        }
+    } else {
+        try {
+            if (member.roles.cache.has(roleId)) {
+                await member.roles.remove(roleId);
+                console.log(`Removed role ${roleId} from ${user.tag}`);
+            }
+        } catch (error) {
+            console.error(`Error removing role: ${error}`);
+        }
+    }
+}
+// Reaction Add Event
+client.on('messageReactionAdd', async (reaction, user) => {
+    await handleRoleChange(reaction, user, true);
+});
+
+// Reaction Remove Event
+client.on('messageReactionRemove', async (reaction, user) => {
+    await handleRoleChange(reaction, user, false);
+});
+
+// Handles uncached reactions
+client.on('raw', async event => {
+    if (!['MESSAGE_REACTION_ADD', 'MESSAGE_REACTION_REMOVE'].includes(event.t)) return;
+    
+    const { d: data } = event;
+    const channel = await client.channels.fetch(data.channel_id);
+    const message = await channel.messages.fetch(data.message_id);
+    const emoji = data.emoji.name;
+    const user = await client.users.fetch(data.user_id);
+    
+    const fakeReaction = {
+        message,
+        emoji: { name: emoji },
+        partial: false,
+        users: { remove: async () => {} } // Prevent crashes if remove fails
+    };
+    
+    if (event.t === 'MESSAGE_REACTION_ADD') {
+        handleRoleChange(fakeReaction, user, true);
+    } else if (event.t === 'MESSAGE_REACTION_REMOVE') {
+        handleRoleChange(fakeReaction, user, false);
+    }
+});
+
 
 // Log in to Discord using the token from the environment variables
 client.login(process.env.DISCORD_TOKEN);
