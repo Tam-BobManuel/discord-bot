@@ -117,7 +117,7 @@ client.on('ready', async () => {
     }
 
     // Schedule the message-clearing task every 1 minute
-    setInterval(clearGeneralChannel, 1 * 60 * 1000); // 1 minute in milliseconds
+    setInterval(clearGeneralChannel, 60 * 60 * 1000); // 60 minutes in milliseconds
 });
 
 client.on('guildMemberAdd', async (member) => {
